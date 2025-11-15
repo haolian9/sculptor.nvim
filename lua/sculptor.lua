@@ -45,65 +45,84 @@ do
   end
 end
 
----@alias sculptor.Program fun(fpath: string): boolean
+---@class sculptor.RunSpec
+---@field bin string
+---@field args string[]
+---@field normal_exit integer
+
+---@alias sculptor.Program fun(fpath:string):false|sculptor.RunSpec
 
 -- all formatting programs should modify the file inplace
----@type {[string]: sculptor.Program}
+---@type {[string]:sculptor.Program}
 local programs = {
-  zig = function(fpath)
-    local cp = subprocess.run("zig", { args = { "fmt", "--ast-check", fpath } })
-    return cp.exit_code == 0
+  zig = function(fpath) --
+    return { bin = "zig", args = { "fmt", "--ast-check", fpath }, normal_exit = 0 }
   end,
   stylua = function(fpath)
     local conf = resolve_stylua_config()
+    assert(conf)
     if conf == nil then return false end
-    local cp = subprocess.run("stylua", { args = { "--config-path", conf, fpath } })
-    return cp.exit_code == 0
+    return { bin = "stylua", args = { "--config-path", conf, fpath }, normal_exit = 0 }
   end,
-  isort = function(fpath)
-    local cp = subprocess.run("isort", { args = { "--quiet", "--profile", "black", fpath } })
-    return cp.exit_code == 0
+  isort = function(fpath) --
+    return { bin = "isort", args = { "--quiet", "--profile", "black", fpath }, normal_exit = 0 }
   end,
-  black = function(fpath)
-    local cp = subprocess.run("black", { args = { "--quiet", "--target-version", "py310", "--line-length", "256", fpath } })
-    return cp.exit_code == 0
+  black = function(fpath) --
+    return { bin = "black", args = { "--quiet", "--target-version", "py310", "--line-length", "256", fpath }, normal_exit = 0 }
   end,
-  go = function(fpath)
-    local cp = subprocess.run("gofmt", { args = { "-w", fpath } })
-    return cp.exit_code == 0
+  go = function(fpath) --
+    return { bin = "gofmt", args = { "-w", fpath }, normal_exit = 0 }
   end,
-  ["clang-format"] = function(fpath)
-    local cp = subprocess.run("clang-format", { args = { "-i", fpath } })
-    return cp.exit_code == 0
+  ["clang-format"] = function(fpath) --
+    return { bin = "clang-format", args = { "-i", fpath }, normal_exit = 0 }
   end,
-  gomodifytags = function(fpath)
-    local cp = subprocess.run("gomodifytags", { args = { "-all", "-add-tags", "json", "-w", "-file", fpath } })
-    return cp.exit_code == 0
+  gomodifytags = function(fpath) --
+    return { bin = "gomodifytags", args = { "-all", "-add-tags", "json", "-w", "-file", fpath }, normal_exit = 0 }
   end,
-  ["fish-indent"] = function(fpath)
-    local cp = subprocess.run("fish_indent", { args = { "-w", fpath } })
-    return cp.exit_code == 0
+  ["fish-indent"] = function(fpath) --
+    return { bin = "fish_indent", args = { "-w", fpath }, normal_exit = 0 }
   end,
 }
 
---{ft: {profile: [(program-name, program-handler)]}}
----@type {[string]: {[string]: [string,sculptor.Program][]}}
-local profiles = {}
-do
-  local defines = {
-    { "lua", "default", { "stylua" } },
-    { "zig", "default", { "zig" } },
-    { "python", "default", { "isort", "black" } },
-    { "go", "default", { "go" } },
-    { "go", "jsontags", { "gomodifytags" } },
-    { "c", "default", { "clang-format" } },
-    { "fish", "default", { "fish-indent" } },
-  }
-  for ft, profile_name, prog_names in itertools.itern(defines) do
-    if profiles[ft] == nil then profiles[ft] = {} end
-    if profiles[ft][profile_name] ~= nil then error("duplicate definitions for profile " .. profile_name) end
-    profiles[ft][profile_name] = its(prog_names):map(function(name) return { name, assert(programs[name]) } end):tolist()
+--{ft: {profile: [program]}}
+---@type {[string]:{[string]:sculptor.Program[]}}
+local profiles = (function(specs)
+  local result = {}
+  for ft, profile_name, prog_names in itertools.itern(specs) do
+    if result[ft] == nil then result[ft] = {} end
+    if result[ft][profile_name] ~= nil then error("duplicate definitions for profile " .. profile_name) end
+    result[ft][profile_name] = its(prog_names):map(function(name) return assert(programs[name]) end):tolist()
+    return result
   end
+end)({
+  { "lua", "default", { "stylua" } },
+  { "zig", "default", { "zig" } },
+  { "python", "default", { "isort", "black" } },
+  { "go", "default", { "go" } },
+  { "go", "jsontags", { "gomodifytags" } },
+  { "c", "default", { "clang-format" } },
+  { "fish", "default", { "fish-indent" } },
+})
+
+---@param specs sculptor.RunSpec[]
+---@param on_exit fun() @will be run in vim.schedule()
+local function serially_run(specs, on_exit) --
+  assert(#specs > 0)
+
+  ---@type fun(): sculptor.RunSpec?
+  local iter = itertools.iter(specs)
+
+  local function next()
+    ---@type sculptor.RunSpec?
+    local spec = iter()
+    if spec == nil then return vim.schedule(on_exit) end
+    subprocess.spawn(spec.bin, { args = spec.args }, function() end, function(exit_code)
+      if exit_code ~= spec.normal_exit then return jelly.warn("failed to run: %s %s", spec.bin, spec.args) end
+      next()
+    end)
+  end
+
+  next()
 end
 
 local diffpatch
@@ -157,6 +176,7 @@ do
       local a = buflines.joined(a_bufnr)
       local b = table.concat(b_lines, "\n")
       ---@type sculptor.DiffHunk
+      ---@diagnostic disable-next-line: missing-fields
       hunks = vim.diff(a, b, { result_type = "indices" })
       if #hunks == 0 then return jelly.debug("no need to patch") end
     end
@@ -174,39 +194,40 @@ local regulator = BufTickRegulator(1024)
 ---@param profile? string
 function M.sculpt(bufnr, ft, profile)
   bufnr = bufnr or ni.get_current_buf()
-  if regulator:throttled(bufnr) then return jelly.debug("no change") end
-
   ft = ft or prefer.bo(bufnr, "filetype")
   profile = profile or "default"
 
+  if regulator:throttled(bufnr) then return jelly.debug("no change") end
+  regulator:update(bufnr) --avoid other sculptor running
+
+  ---@type sculptor.Program[]
   local progs = dictlib.get(profiles, ft, profile) or {}
   if #progs == 0 then return jelly.info("no available formatting programs") end
-
   jelly.info("using ft=%s, profile=%s, bufnr=%d, progs=%d", ft, profile, bufnr, #progs)
 
-  local tmpfpath
-  do -- prepare tmpfile
-    tmpfpath = os.tmpname()
-    if not cthulhu.nvim.dump_buffer(bufnr, tmpfpath) then return jelly.err("failed to dump buf#%d", bufnr) end
+  --prepare tmpfile
+  local tmpfile = os.tmpname()
+  if not cthulhu.nvim.dump_buffer(bufnr, tmpfile) then return jelly.err("failed to dump buf#%d", bufnr) end
+
+  local function sync()
+    if not regulator:throttled(bufnr) then
+      jelly.warn("buf=%s changed while sculpting", bufnr)
+    else
+      diffpatch(bufnr, tmpfile)
+      ctx.buf(bufnr, function() ex.eval("silent write") end)
+      regulator:update(bufnr)
+    end
+    iuv.fs_unlink(tmpfile)
   end
 
   --progs pipeline against tmpfile
-  for name, prog in itertools.itern(progs) do
-    if not prog(tmpfpath) then
-      jelly.warn("failed to run %s", name)
-      subprocess.tail_logs()
-      return
-    end
+  local specs = {}
+  for _, prog in ipairs(progs) do
+    local spec = prog(tmpfile)
+    if spec then table.insert(specs, spec) end
   end
-
-  do -- sync back & save
-    diffpatch(bufnr, tmpfpath)
-    ctx.buf(bufnr, function() ex.eval("silent write") end)
-    regulator:update(bufnr)
-  end
-
-  -- cleanup
-  iuv.fs_unlink(tmpfpath)
+  if #specs == 0 then return jelly.warn("no available formatting programs") end
+  serially_run(specs, sync)
 end
 
 M.comp = {
