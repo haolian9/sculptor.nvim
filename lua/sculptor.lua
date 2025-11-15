@@ -17,7 +17,7 @@ local fs = require("infra.fs")
 local itertools = require("infra.itertools")
 local its = require("infra.its")
 local iuv = require("infra.iuv")
-local jelly = require("infra.jellyfish")("sculptor")
+local jelly = require("infra.jellyfish")("sculptor", "info")
 local listlib = require("infra.listlib")
 local mi = require("infra.mi")
 local ni = require("infra.ni")
@@ -92,8 +92,8 @@ local profiles = (function(specs)
     if result[ft] == nil then result[ft] = {} end
     if result[ft][profile_name] ~= nil then error("duplicate definitions for profile " .. profile_name) end
     result[ft][profile_name] = its(prog_names):map(function(name) return assert(programs[name]) end):tolist()
-    return result
   end
+  return result
 end)({
   { "lua", "default", { "stylua" } },
   { "zig", "default", { "zig" } },
@@ -202,8 +202,8 @@ function M.sculpt(bufnr, ft, profile)
 
   ---@type sculptor.Program[]
   local progs = dictlib.get(profiles, ft, profile) or {}
-  if #progs == 0 then return jelly.info("no available formatting programs") end
   jelly.info("using ft=%s, profile=%s, bufnr=%d, progs=%d", ft, profile, bufnr, #progs)
+  if #progs == 0 then return jelly.warn("no preset formatting programs") end
 
   --prepare tmpfile
   local tmpfile = os.tmpname()
