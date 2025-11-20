@@ -20,7 +20,6 @@ local iuv = require("infra.iuv")
 local jelly = require("infra.jellyfish")("sculptor", "info")
 local listlib = require("infra.listlib")
 local mi = require("infra.mi")
-local ni = require("infra.ni")
 local prefer = require("infra.prefer")
 local project = require("infra.project")
 local subprocess = require("infra.subprocess")
@@ -193,7 +192,7 @@ local regulator = BufTickRegulator(1024)
 ---@param ft? string
 ---@param profile? string
 function M.sculpt(bufnr, ft, profile)
-  bufnr = bufnr or ni.get_current_buf()
+  bufnr = mi.resolve_bufnr_param(bufnr)
   ft = ft or prefer.bo(bufnr, "filetype")
   profile = profile or "default"
 
