@@ -39,7 +39,7 @@ do
   local found
   ---@return string?
   function resolve_stylua_config()
-    if found == nil then found = resolve() end
+    if not found then found = resolve() end
     return found
   end
 end
@@ -49,7 +49,7 @@ end
 ---@field args string[]
 ---@field normal_exit integer
 
----@alias sculptor.Program fun(fpath:string):false|sculptor.RunSpec
+---@alias sculptor.Program fun(fpath:string):nil|sculptor.RunSpec
 
 -- all formatting programs should modify the file inplace
 ---@type {[string]:sculptor.Program}
@@ -59,8 +59,7 @@ local programs = {
   end,
   stylua = function(fpath)
     local conf = resolve_stylua_config()
-    assert(conf)
-    if conf == nil then return false end
+    if conf == nil then return jelly.warn("no stylua config file found") end
     return { bin = "stylua", args = { "--config-path", conf, fpath }, normal_exit = 0 }
   end,
   isort = function(fpath) --
